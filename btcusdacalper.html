@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BTCUSD – HUMAN SCALPER ENGINE A+</title>
+    <style>
+        :root {
+            --bg: #000; --cyan: #00ffff; --fire: #ff3333; --ok: #00ff66;
+            --h1: #bf40bf; --m30: #0066ff; --m15: #ffff00; --m5: #00ff00; --m1: #ffffff;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; background: var(--bg); color: #fff; font-family: 'Consolas', monospace; overflow: hidden; height: 100vh; }
+
+        #status {
+            position: fixed; top: 0; width: 100%; height: 70px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: #080808; border-bottom: 2px solid #222; z-index: 1000;
+        }
+        #state { font-size: 22px; font-weight: 900; letter-spacing: 1px; }
+        #tf-info { font-size: 13px; color: var(--cyan); margin-top: 2px; }
+
+        #chart { position: absolute; top: 70px; bottom: 80px; width: 100%; z-index: 1; }
+        iframe { width: 100%; height: 100%; border: none; }
+
+        #mission-panel {
+            position: fixed; right: 10px; top: 90px; width: 190px;
+            background: rgba(0,0,0,.9); border: 1px solid #333; padding: 8px; z-index: 500;
+        }
+        .m-row { font-size: 11px; padding: 6px; margin-bottom: 4px; border-left: 5px solid; background: rgba(255,255,255,0.03); cursor: pointer; }
+        .active-tf { background: rgba(0, 255, 255, 0.1) !important; border-right: 2px solid var(--cyan); }
+
+        #footer {
+            position: fixed; bottom: 0; width: 100%; height: 80px;
+            display: flex; align-items: center; padding: 0 15px; border-top: 2px solid #222; z-index: 1000; background: #000;
+        }
+        #price-box { flex: 1; }
+        #price-val { font-size: 26px; font-weight: 900; color: var(--cyan); }
+        .label { font-size: 10px; color: #666; display: block; }
+
+        .btn {
+            width: 110px; height: 55px; border: none; border-radius: 6px;
+            font-size: 18px; font-weight: 900; opacity: .15; pointer-events: none; transition: 0.2s;
+        }
+        .buy { background: var(--ok); color: #000; }
+        .sell { background: var(--fire); color: #fff; }
+        .ready { opacity: 1 !important; pointer-events: auto !important; box-shadow: 0 0 15px currentColor; }
+
+        #lock-screen {
+            position: fixed; inset: 0; background: rgba(0,0,0,.97);
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            font-size: 28px; font-weight: 900; color: var(--fire); z-index: 9999; text-align: center;
+        }
+
+        .enter-flash { background: var(--fire) !important; color: #fff !important; animation: pulse 0.4s infinite alternate; }
+        @keyframes pulse { from { opacity: 1; } to { opacity: 0.6; } }
+
+        /* === MISSION TOGGLE CSS === */
+        #mission-panel.hidden {
+            display: none;
+        }
+
+        #mission-toggle {
+            position: fixed;
+            right: 10px;
+            bottom: 95px;
+            z-index: 1200;
+            background: #111;
+            color: var(--cyan);
+            border: 1px solid var(--cyan);
+            padding: 6px 10px;
+            font-size: 10px;
+            font-weight: 900;
+            border-radius: 4px;
+            opacity: 0.8;
+            cursor: pointer;
+        }
+
+        #mission-toggle:active {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+
+<div id="status">
+    <div id="state">CONNECTING...</div>
+    <div id="tf-info">INITIALIZING ENGINE</div>
+</div>
+
+<div id="chart">
+    <iframe src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=1&theme=dark"></iframe>
+</div>
+
+<div id="mission-panel" class="hidden">
+    <div class="m-row" id="m-h1" style="border-color:var(--h1)" onclick="switchTF('h1')">H1: --</div>
+    <div class="m-row" id="m-m30" style="border-color:var(--m30)" onclick="switchTF('m30')">M30: --</div>
+    <div class="m-row" id="m-m15" style="border-color:var(--m15)" onclick="switchTF('m15')">M15: --</div>
+    <div class="m-row" id="m-m5" style="border-color:var(--m5)" onclick="switchTF('m5')">M5: --</div>
+    <div class="m-row" id="m-m1" style="border-color:var(--m1)" onclick="switchTF('m1')">M1: --</div>
+</div>
+
+<div id="footer">
+    <div id="price-box">
+        <span class="label">BTC/USDT BINANCE</span>
+        <div id="price-val">0.00</div>
+    </div>
+    <div style="display:flex; gap:10px;">
+        <button id="buy-btn" class="btn buy" onclick="fire('BUY')">BUY</button>
+        <button id="sell-btn" class="btn sell" onclick="fire('SELL')">SELL</button>
+    </div>
+</div>
+
+<div id="lock-screen">
+    <div>ENTRY EXECUTED</div>
+    <div style="font-size:14px; color:#666; margin-top:10px;">ENGINE LOCKED FOR SAFETY</div>
+</div>
+
+<button id="mission-toggle" onclick="toggleMission()">MISSION</button>
+
+<script>
+    const WS_URL = "wss://btcusdscalper.sapammeded.workers.dev/";
+    const TF_LIST = ["m1", "m5", "m15", "m30", "h1"];
+
+    let ws, enginePrice = 0, isLocked = false, activeTF = "m1";
+    let holdStart = null, lastTouch = 0;
+    let notificationLocked = false;
+    let missionVisible = false; // Default Hide
+
+    const HOLD_TIME = 350;
+    const RADIUS = 0.15;
+    const CHASE_DIST = 180;
+    const CHASE_TIME = 1500;
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const swCode = `
+    self.addEventListener('notificationclick', e => {
+        e.notification.close();
+        e.waitUntil(clients.matchAll({type:'window'}).then(cl => cl.length > 0 ? cl[0].focus() : clients.openWindow('/')));
+    });`;
+    const swBlob = new Blob([swCode], {type: 'application/javascript'});
+    const swUrl = URL.createObjectURL(swBlob);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register(swUrl);
+
+    // --- MISSION TOGGLE SCRIPT ---
+    function toggleMission() {
+        missionVisible = !missionVisible;
+        const panel = document.getElementById("mission-panel");
+        panel.classList.toggle("hidden", !missionVisible);
+    }
+
+    function switchTF(tf) {
+        if (isLocked) return;
+        activeTF = tf;
+        holdStart = null;
+        lastTouch = 0;
+    }
+
+    function sendNotif(bias, tf, price) {
+        if (Notification.permission === 'granted' && !notificationLocked && !isLocked) {
+            navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification("🔥 BTC READY", {
+                    body: `MODE A+: ${bias} [TF ${tf.toUpperCase()}] @ ${price.toFixed(2)}`,
+                    icon: 'https://cdn-icons-png.flaticon.com/512/2533/2533031.png',
+                    tag: 'btc-sniper',
+                    renotify: true
+                });
+            });
+            notificationLocked = true;
+        }
+    }
+
+    function isAllSameDir(m) {
+        let dirs = [];
+        TF_LIST.forEach(tf => {
+            if (m[tf] && !isNaN(m[tf])) dirs.push(m[tf] > enginePrice ? "BUY" : "SELL");
+        });
+        return dirs.length >= 3 && dirs.every(x => x === dirs[0]);
+    }
+
+    function checkValidEnter(state, mission) {
+        if (state !== "ENTER" || !mission[activeTF]) return false;
+        const target = parseFloat(mission[activeTF]);
+        const dist = Math.abs(target - enginePrice);
+        if (dist <= RADIUS) {
+            lastTouch = Date.now();
+            if (!holdStart) holdStart = Date.now();
+        }
+        const timeMet = holdStart && (Date.now() - holdStart >= HOLD_TIME);
+        const spikeMet = (Date.now() - lastTouch < 800);
+        const chaseMet = (isAllSameDir(mission) && dist <= CHASE_DIST && Date.now() - lastTouch < CHASE_TIME);
+        return timeMet || spikeMet || chaseMet;
+    }
+
+    function connect() {
+        ws = new WebSocket(WS_URL);
+        ws.onmessage = e => {
+            const data = JSON.parse(e.data);
+            if (data.type !== "TICK" || isLocked) return;
+            enginePrice = parseFloat(data.bid);
+            document.getElementById("price-val").textContent = enginePrice.toFixed(2);
+            const st = data.discretionaryZone?.state;
+            const bias = data.discretionaryZone?.bias;
+            const mission = data.mission;
+            const isReady = checkValidEnter(st, mission);
+            const statusEl = document.getElementById("status");
+            const stateEl = document.getElementById("state");
+            const tfInfoEl = document.getElementById("tf-info");
+
+            if (isReady) {
+                statusEl.className = "enter-flash";
+                stateEl.textContent = `READY ${bias}`;
+                tfInfoEl.textContent = `MODE A+ ACTIVE (${activeTF.toUpperCase()})`;
+                document.getElementById("buy-btn").classList.toggle("ready", bias === "BUY");
+                document.getElementById("sell-btn").classList.toggle("ready", bias === "SELL");
+                sendNotif(bias, activeTF, enginePrice);
+            } else {
+                statusEl.className = "";
+                stateEl.textContent = st || "WAIT";
+                tfInfoEl.textContent = activeTF.toUpperCase();
+                document.getElementById("buy-btn").classList.remove("ready");
+                document.getElementById("sell-btn").classList.remove("ready");
+                if (st !== "ENTER") notificationLocked = false;
+            }
+
+            TF_LIST.forEach(tf => {
+                const row = document.getElementById(`m-${tf}`);
+                const val = mission[tf];
+                row.classList.toggle("active-tf", tf === activeTF);
+                if (val === "ACHIEVED") {
+                    row.innerHTML = `${tf.toUpperCase()}: ACHIEVED`;
+                    row.style.opacity = "0.3";
+                } else {
+                    row.innerHTML = `<b>${tf.toUpperCase()}</b>: ${parseFloat(val).toFixed(2)}`;
+                    row.style.opacity = "1";
+                }
+            });
+        };
+        ws.onclose = () => setTimeout(connect, 1500);
+    }
+
+    function fire(side) {
+        if (isLocked) return;
+        isLocked = true;
+        document.getElementById("lock-screen").style.display = "flex";
+        ws.send(JSON.stringify({ cmd: "ENTRY", side, price: enginePrice, tf: activeTF, mode: "AGGRESSIVE_A_PLUS" }));
+    }
+
+    document.addEventListener('click', () => {
+        if (Notification.permission !== 'granted') Notification.requestPermission();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }, { once: true });
+
+    connect();
+</script>
+</body>
+</html>
