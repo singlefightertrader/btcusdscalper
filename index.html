@@ -23,6 +23,22 @@
         #chart { position: absolute; top: 70px; bottom: 80px; width: 100%; z-index: 1; }
         iframe { width: 100%; height: 100%; border: none; }
 
+        /* GARIS BANTU OVERLAY */
+        #chart-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 10;
+        }
+        .mission-line {
+            position: absolute; left: 0; width: 100%; height: 1px;
+            display: flex; align-items: center; justify-content: flex-end;
+            transition: top 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .mission-line span {
+            font-size: 10px; font-weight: bold; background: rgba(0,0,0,0.7);
+            padding: 2px 5px; border-radius: 3px; margin-right: 10px;
+            border: 1px solid currentColor;
+        }
+
         #mission-panel {
             position: fixed; right: 10px; top: 90px; width: 190px;
             background: rgba(0,0,0,.9); border: 1px solid #333; padding: 8px; z-index: 500;
@@ -55,29 +71,12 @@
         .enter-flash { background: var(--fire) !important; color: #fff !important; animation: pulse 0.4s infinite alternate; }
         @keyframes pulse { from { opacity: 1; } to { opacity: 0.6; } }
 
-        /* === MISSION TOGGLE CSS === */
-        #mission-panel.hidden {
-            display: none;
-        }
-
+        #mission-panel.hidden { display: none; }
         #mission-toggle {
-            position: fixed;
-            right: 10px;
-            bottom: 95px;
-            z-index: 1200;
-            background: #111;
-            color: var(--cyan);
-            border: 1px solid var(--cyan);
-            padding: 6px 10px;
-            font-size: 10px;
-            font-weight: 900;
-            border-radius: 4px;
-            opacity: 0.8;
-            cursor: pointer;
-        }
-
-        #mission-toggle:active {
-            opacity: 1;
+            position: fixed; right: 10px; bottom: 95px; z-index: 1200;
+            background: #111; color: var(--cyan); border: 1px solid var(--cyan);
+            padding: 6px 10px; font-size: 10px; font-weight: 900; border-radius: 4px;
+            opacity: 0.8; cursor: pointer;
         }
     </style>
 </head>
@@ -89,6 +88,7 @@
 </div>
 
 <div id="chart">
+    <div id="chart-overlay"></div>
     <iframe src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=1&theme=dark"></iframe>
 </div>
 
@@ -125,7 +125,16 @@
     let ws, enginePrice = 0, isLocked = false, activeTF = "m1";
     let holdStart = null, lastTouch = 0;
     let notificationLocked = false;
-    let missionVisible = false; // Default Hide
+    let missionVisible = false;
+
+    // --- MISSION LOGIC PERSISTENCE ---
+    const MISSION_DATA = {
+        h1: { price: 0, achieved: false },
+        m30: { price: 0, achieved: false },
+        m15: { price: 0, achieved: false },
+        m5: { price: 0, achieved: false },
+        m1: { price: 0, achieved: false }
+    };
 
     const HOLD_TIME = 350;
     const RADIUS = 0.15;
@@ -134,20 +143,9 @@
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    const swCode = `
-    self.addEventListener('notificationclick', e => {
-        e.notification.close();
-        e.waitUntil(clients.matchAll({type:'window'}).then(cl => cl.length > 0 ? cl[0].focus() : clients.openWindow('/')));
-    });`;
-    const swBlob = new Blob([swCode], {type: 'application/javascript'});
-    const swUrl = URL.createObjectURL(swBlob);
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register(swUrl);
-
-    // --- MISSION TOGGLE SCRIPT ---
     function toggleMission() {
         missionVisible = !missionVisible;
-        const panel = document.getElementById("mission-panel");
-        panel.classList.toggle("hidden", !missionVisible);
+        document.getElementById("mission-panel").classList.toggle("hidden", !missionVisible);
     }
 
     function switchTF(tf) {
@@ -157,26 +155,91 @@
         lastTouch = 0;
     }
 
-    function sendNotif(bias, tf, price) {
-        if (Notification.permission === 'granted' && !notificationLocked && !isLocked) {
-            navigator.serviceWorker.ready.then(reg => {
-                reg.showNotification("🔥 BTC READY", {
-                    body: `MODE A+: ${bias} [TF ${tf.toUpperCase()}] @ ${price.toFixed(2)}`,
-                    icon: 'https://cdn-icons-png.flaticon.com/512/2533/2533031.png',
-                    tag: 'btc-sniper',
-                    renotify: true
-                });
-            });
-            notificationLocked = true;
-        }
+    // --- VISUAL LINE RENDERER ---
+    function updateMissionLines() {
+        const overlay = document.getElementById("chart-overlay");
+        overlay.innerHTML = "";
+        
+        TF_LIST.forEach(tf => {
+            const data = MISSION_DATA[tf];
+            if (data.price > 0 && !data.achieved) {
+                const color = getComputedStyle(document.documentElement).getPropertyValue(`--${tf}`).trim();
+                const diff = (data.price - enginePrice) * 15; // Skala visual sederhana
+                const topOffset = (overlay.offsetHeight / 2) - diff;
+
+                if (topOffset > 0 && topOffset < overlay.offsetHeight) {
+                    const line = document.createElement("div");
+                    line.className = "mission-line";
+                    line.style.top = `${topOffset}px`;
+                    line.style.borderTop = `1px dashed ${color}`;
+                    line.style.color = color;
+                    line.innerHTML = `<span>${tf.toUpperCase()} TARGET: ${data.price.toFixed(2)}</span>`;
+                    overlay.appendChild(line);
+                }
+            }
+        });
     }
 
-    function isAllSameDir(m) {
-        let dirs = [];
-        TF_LIST.forEach(tf => {
-            if (m[tf] && !isNaN(m[tf])) dirs.push(m[tf] > enginePrice ? "BUY" : "SELL");
-        });
-        return dirs.length >= 3 && dirs.every(x => x === dirs[0]);
+    function connect() {
+        ws = new WebSocket(WS_URL);
+        ws.onmessage = e => {
+            const data = JSON.parse(e.data);
+            if (data.type !== "TICK" || isLocked) return;
+            enginePrice = parseFloat(data.bid);
+            document.getElementById("price-val").textContent = enginePrice.toFixed(2);
+            
+            const st = data.discretionaryZone?.state;
+            const bias = data.discretionaryZone?.bias;
+            const mission = data.mission;
+
+            // Update Mission Data Persistently
+            TF_LIST.forEach(tf => {
+                const newPrice = parseFloat(mission[tf]);
+                // Jika misi tercapai atau data worker berubah karena SNR baru, update koordinat
+                if (MISSION_DATA[tf].price === 0 || mission[tf] === "ACHIEVED" || Math.abs(MISSION_DATA[tf].price - enginePrice) < 0.05) {
+                    if (mission[tf] !== "ACHIEVED") {
+                        MISSION_DATA[tf].price = newPrice;
+                        MISSION_DATA[tf].achieved = false;
+                    } else {
+                        MISSION_DATA[tf].achieved = true;
+                    }
+                }
+            });
+
+            updateMissionLines();
+
+            const isReady = checkValidEnter(st, mission);
+            const statusEl = document.getElementById("status");
+            const stateEl = document.getElementById("state");
+            const tfInfoEl = document.getElementById("tf-info");
+
+            if (isReady) {
+                statusEl.className = "enter-flash";
+                stateEl.textContent = `READY ${bias}`;
+                tfInfoEl.textContent = `MODE A+ ACTIVE (${activeTF.toUpperCase()})`;
+                document.getElementById("buy-btn").classList.toggle("ready", bias === "BUY");
+                document.getElementById("sell-btn").classList.toggle("ready", bias === "SELL");
+            } else {
+                statusEl.className = "";
+                stateEl.textContent = st || "WAIT";
+                tfInfoEl.textContent = activeTF.toUpperCase();
+                document.getElementById("buy-btn").classList.remove("ready");
+                document.getElementById("sell-btn").classList.remove("ready");
+            }
+
+            TF_LIST.forEach(tf => {
+                const row = document.getElementById(`m-${tf}`);
+                row.classList.toggle("active-tf", tf === activeTF);
+                if (MISSION_DATA[tf].achieved) {
+                    row.innerHTML = `${tf.toUpperCase()}: ACHIEVED`;
+                    row.style.opacity = "0.3";
+                } else {
+                    row.innerHTML = `<b>${tf.toUpperCase()}</b>: ${MISSION_DATA[tf].price.toFixed(2)}`;
+                    row.style.opacity = "1";
+                }
+            });
+        };
+        ws.onclose = () => setTimeout(connect, 1500);
     }
 
     function checkValidEnter(state, mission) {
@@ -189,55 +252,7 @@
         }
         const timeMet = holdStart && (Date.now() - holdStart >= HOLD_TIME);
         const spikeMet = (Date.now() - lastTouch < 800);
-        const chaseMet = (isAllSameDir(mission) && dist <= CHASE_DIST && Date.now() - lastTouch < CHASE_TIME);
-        return timeMet || spikeMet || chaseMet;
-    }
-
-    function connect() {
-        ws = new WebSocket(WS_URL);
-        ws.onmessage = e => {
-            const data = JSON.parse(e.data);
-            if (data.type !== "TICK" || isLocked) return;
-            enginePrice = parseFloat(data.bid);
-            document.getElementById("price-val").textContent = enginePrice.toFixed(2);
-            const st = data.discretionaryZone?.state;
-            const bias = data.discretionaryZone?.bias;
-            const mission = data.mission;
-            const isReady = checkValidEnter(st, mission);
-            const statusEl = document.getElementById("status");
-            const stateEl = document.getElementById("state");
-            const tfInfoEl = document.getElementById("tf-info");
-
-            if (isReady) {
-                statusEl.className = "enter-flash";
-                stateEl.textContent = `READY ${bias}`;
-                tfInfoEl.textContent = `MODE A+ ACTIVE (${activeTF.toUpperCase()})`;
-                document.getElementById("buy-btn").classList.toggle("ready", bias === "BUY");
-                document.getElementById("sell-btn").classList.toggle("ready", bias === "SELL");
-                sendNotif(bias, activeTF, enginePrice);
-            } else {
-                statusEl.className = "";
-                stateEl.textContent = st || "WAIT";
-                tfInfoEl.textContent = activeTF.toUpperCase();
-                document.getElementById("buy-btn").classList.remove("ready");
-                document.getElementById("sell-btn").classList.remove("ready");
-                if (st !== "ENTER") notificationLocked = false;
-            }
-
-            TF_LIST.forEach(tf => {
-                const row = document.getElementById(`m-${tf}`);
-                const val = mission[tf];
-                row.classList.toggle("active-tf", tf === activeTF);
-                if (val === "ACHIEVED") {
-                    row.innerHTML = `${tf.toUpperCase()}: ACHIEVED`;
-                    row.style.opacity = "0.3";
-                } else {
-                    row.innerHTML = `<b>${tf.toUpperCase()}</b>: ${parseFloat(val).toFixed(2)}`;
-                    row.style.opacity = "1";
-                }
-            });
-        };
-        ws.onclose = () => setTimeout(connect, 1500);
+        return timeMet || spikeMet;
     }
 
     function fire(side) {
@@ -246,11 +261,6 @@
         document.getElementById("lock-screen").style.display = "flex";
         ws.send(JSON.stringify({ cmd: "ENTRY", side, price: enginePrice, tf: activeTF, mode: "AGGRESSIVE_A_PLUS" }));
     }
-
-    document.addEventListener('click', () => {
-        if (Notification.permission !== 'granted') Notification.requestPermission();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-    }, { once: true });
 
     connect();
 </script>
